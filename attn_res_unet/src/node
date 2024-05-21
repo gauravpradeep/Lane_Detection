@@ -1,0 +1,58 @@
+#! /usr/bin/python3
+
+import os
+import time
+import cv2
+import numpy as np
+
+import rospy
+from sensor_msgs.msg import Image
+from std_msgs.msg import Float32MultiArray, String
+from cv_bridge import CvBridge
+
+from model import AttentionUNet
+
+class node():
+
+    def __init__(self, input_shape):
+
+        rospy.init_node("node")
+        with tf.device('/GPU:0'):
+            self.model = AttentionUNet(input_shape).build_unet()
+
+        self.model.load_weights("unet.h5")
+        
+        self.image_sub = rospy.Subscriber("/zed2i/zed_node/rgb_raw/image_raw_color", Image, self.callback, queue_size=1)
+        self.mask_pub = rospy.Publisher("/lane_mask", Image, queue_size=10)
+
+        self.br = CvBridge()
+
+    def callback(self, image):
+
+        np_image = np.uint8(self.br.imgmsg_to_cv2(image, desired_encoding="passthrough")[:, :, :3])
+        np_image = cv2.resize(np_image, (256, 128))
+        np_image = np.expand_dims(np_image, axis=0)
+        
+        with tf.device('/GPU:0'):
+            pred = self.model.predict(np_image)
+
+        mask = Image()
+        mask.data = np.uint8(pred.flatten()*255).tolist()
+        mask.height = 128
+        mask.width = 256
+        mask.encoding = "mono8"
+
+        mask.is_bigendian = image.is_bigendian
+        mask.step = mask.width
+        mask.header = image.header
+
+        self.mask_pub.publish(mask)
+
+        print("published a mask!!")
+
+
+if __name__ == '__main__':
+    node = node((128, 256, 3))
+    rospy.spin()
+
+
